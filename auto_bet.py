@@ -249,59 +249,73 @@ def click_team_in_event_page(driver, player_name):
     logger.warning("❌ KHÔNG TÌM THẤY ĐỘI CẦN CƯỢC")
     return False
 
-# ================= TÌM GIẢI =================
-logger.info("🔍 Đang tìm giải E-Soccer Volta...")
+# ================= VÒNG LẶP AUTO =================
 while True:
-    league = find_volta_league(driver)
-    if league:
-        logger.info("✅ Đã tìm thấy giải E-Soccer Volta")
-        ensure_league_expanded(league)
-        break
-    time.sleep(2)
 
-# ================= IN DANH SÁCH =================
-print("\n📋 DANH SÁCH TRẬN & NGƯỜI CHƠI:\n")
+    logger.info("🔍 Đang tìm giải E-Soccer Volta...")
+    league = None
 
-events = league.find_elements(
-    By.CSS_SELECTOR,
-    "div.eventlist_asia_fe_EventListLeague_singleEvent"
-)
-
-for idx, event in enumerate(events, 1):
-    teams = event.find_elements(
-        By.CSS_SELECTOR,
-        "span.eventlist_asia_fe_EventCard_teamNameText"
-    )
-    names = [t.text.strip() for t in teams if t.text.strip()]
-    if len(names) >= 2:
-        print(f"Trận {idx}: {names[0]}  vs  {names[1]}")
-
-# ================= NHẬP NGƯỜI CHƠI =================
-target_player = input("\n👉 Nhập TÊN NGƯỜI CHƠI muốn cược (có thể nhập 1 phần): ").strip()
-logger.info(f"🎯 Bạn chọn: {target_player}")
-
-# ================= MỞ TRẬN =================
-if not open_event_page_by_player(driver, target_player):
-    logger.warning("❌ Dừng: không mở được trang trận")
     while True:
-        time.sleep(1)
+        league = find_volta_league(driver)
+        if league:
+            logger.info("✅ Đã tìm thấy giải E-Soccer Volta")
+            ensure_league_expanded(league)
+            break
+        time.sleep(2)
 
-# ================= CLICK ĐỘI =================
-if click_team_in_event_page(driver, target_player):
-    logger.info("✅ ĐÃ CLICK ĐÚNG ĐỘI CẦN CƯỢC")
+    # ================= IN DANH SÁCH =================
+    print("\n📋 DANH SÁCH TRẬN & NGƯỜI CHƠI:\n")
 
-    set_stake_amount(driver, 50)
+    events = league.find_elements(
+        By.CSS_SELECTOR,
+        "div.eventlist_asia_fe_EventListLeague_singleEvent"
+    )
 
-    if place_bet(driver):
-        logger.info("🎉 CƯỢC THÀNH CÔNG – chờ 5s quay lại")
-        go_back_to_list(driver, 5)
+    for idx, event in enumerate(events, 1):
+        teams = event.find_elements(
+            By.CSS_SELECTOR,
+            "span.eventlist_asia_fe_EventCard_teamNameText"
+        )
+        names = [t.text.strip() for t in teams if t.text.strip()]
+        if len(names) >= 2:
+            print(f"Trận {idx}: {names[0]}  vs  {names[1]}")
+
+    # ================= NHẬP NGƯỜI CHƠI =================
+    target_player = input(
+        "\n👉 Nhập TÊN NGƯỜI CHƠI muốn cược (có thể nhập 1 phần): "
+    ).strip()
+
+    logger.info(f"🎯 Bạn chọn: {target_player}")
+
+    # ================= MỞ TRẬN =================
+    if not open_event_page_by_player(driver, target_player):
+        logger.warning("❌ Không mở được trang trận – chờ 10s rồi thử lại")
+        time.sleep(10)
+        continue
+
+    # ================= CLICK ĐỘI =================
+    if click_team_in_event_page(driver, target_player):
+        logger.info("✅ ĐÃ CLICK ĐÚNG ĐỘI CẦN CƯỢC")
+
+        set_stake_amount(driver, 50)
+
+        if place_bet(driver):
+            logger.info("🎉 CƯỢC THÀNH CÔNG – chờ 5s quay lại")
+            go_back_to_list(driver, 5)
+        else:
+            logger.warning("⚠️ CƯỢC KHÔNG THÀNH CÔNG – chờ 3s quay lại")
+            go_back_to_list(driver, 3)
+
     else:
-        logger.warning("⚠️ CƯỢC KHÔNG THÀNH CÔNG – chờ 3s quay lại")
+        logger.warning("❌ KHÔNG CHỌN ĐƯỢC ĐỘI – chờ 3s quay lại")
         go_back_to_list(driver, 3)
 
-else:
-    logger.warning("❌ KHÔNG CHỌN ĐƯỢC ĐỘI – chờ 3s quay lại")
-    go_back_to_list(driver, 3)
+    # ================= CHỜ TRƯỚC VÒNG TIẾP =================
+    logger.info("⏳ Chờ 10s rồi tiếp tục tìm kèo mới...")
+    time.sleep(10)
+
+    # đảm bảo quay về đầu trang (tránh DOM lệch)
+    driver.execute_script("window.scrollTo(0, 0);")
 
 # ================= GIỮ CHƯƠNG TRÌNH =================
 while True:
