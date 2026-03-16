@@ -10,15 +10,19 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import StaleElementReferenceException
-from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException
-
-
+from selenium.common.exceptions import (
+    StaleElementReferenceException,
+    TimeoutException,
+    ElementClickInterceptedException,
+    NoSuchElementException
+)
+from selenium.webdriver.common.keys import Keys
 
 # ================= LOGGER =================
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
+    format="%(asctime)s | %(levelname)-7s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
 
@@ -26,25 +30,22 @@ logger = logging.getLogger(__name__)
 WEB_URL = "https://prod20091.fxf774.com/vi/asian-view/live/B%C3%B3ng-%C4%91%C3%A1?operatorToken=43-7ec295a74440808072cfbf96c4bdfa4d"
 
 API_TOKEN = "247066-ZFfFhtCGjGEUhw"
-LEAGUE_ID = '38439'
+LEAGUE_ID = '38439'           # E-Soccer Volta league ID
 
-# history / result
+# history / result - API v3
 B365_API_BASE = "https://api.b365api.com/v3"
 
-MAX_HISTORY_MATCHES = 300
-
-# inplay (BẮT BUỘC)
+# inplay (vẫn dùng v1)
 BETSAPI_BASE = "https://api.betsapi.com/v1"
-
 SPORT_ID = "1"
 
 TARGET_LEAGUE_KEYWORD = "E-Soccer Volta"
 
-FORM_DAYS = 2
+FORM_DAYS = 5
 MIN_MATCHES = 5
 
-MIN_HIGH_WR = 45.0
-MAX_LOW_WR = 45.0
+MIN_HIGH_WR = 30.0
+MAX_LOW_WR = 60.0
 WINRATE_DIFF_THRESHOLD = 15.0
 
 BASE_STAKE = 50
@@ -71,7 +72,24 @@ last_bet = {
 
 # ================= UTIL =================
 def extract_player(full):
-    return full.split('(')[1].rstrip(')').strip() if '(' in full and ')' in full else full.strip()
+    full = full.strip()
+    logger.debug(f"Raw name: '{full}'")
+
+    if full.endswith("Esports"):
+        full = full[:-7].strip()
+    if full.endswith(") Esports"):
+        full = full[:-9].strip()
+
+    if '(' in full and ')' in full:
+        start = full.rfind('(')
+        end = full.rfind(')')
+        if start != -1 and end != -1 and end > start:
+            player_id = full[start+1:end].strip()
+            logger.debug(f" → Extracted player ID: '{player_id}'")
+            return player_id
+
+    logger.debug(f" → No parentheses → use cleaned: '{full}'")
+    return full
 
 # ================= POPUP =================
 def close_popup_by_center_click(driver, wait_time=4):
@@ -82,68 +100,116 @@ def close_popup_by_center_click(driver, wait_time=4):
     actions = ActionChains(driver)
     actions.move_by_offset(w//2, h//2).click().perform()
     actions.move_by_offset(-(w//2), -(h//2)).perform()
+    logger.debug("Đã thử click giữa màn hình")
 
-# ================= API – HISTORY =================
-def fetch_finished_matches(day=None):
-    params = f"?token={API_TOKEN}&sport_id=1"
+# ================= API – HISTORY (v3) =================
+def fetch_finished_matches(day=None, page=1, league_id=LEAGUE_ID):
+    params = f"?token={API_TOKEN}&sport_id={SPORT_ID}&page={page}"
     if day:
         params += f"&day={day}"
-    
+    if league_id:
+        params += f"&league_id={league_id}"
+
+    url = f"{B365_API_BASE}/events/ended{params}"
+    logger.debug(f"Fetch ended v3 page {page}: {url}")
+
     try:
-        logger.debug(f"📡 Fetch finished matches | day={day}")
-        r = requests.get(f"{B365_API_BASE}/events/ended{params}", timeout=15).json()
-        return r.get("results", [])
-    except Exception as e:
-        logger.error(f"❌ Fetch finished matches error: {e}")
-        return []
+        resp = requests.get(url, timeout=12)
+        resp.raise_for_status()
+        data = resp.json()
+
+        results = data.get("results", [])
+        pager = data.get("pager", {})
+        total_pages = pager.get("total_pages", 1)
+
+        logger.info(f"Page {page} | Trận: {len(results)} | Total pages: {total_pages}")
+        return results, total_pages
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Fetch ended v3 error (page {page}): {e}")
+        return [], 1
+    except ValueError as e:
+        logger.error(f"JSON parse error: {e}")
+        return [], 1
 
 def initialize_historical_data():
-    logger.info(f"📥 INIT DATA {FORM_DAYS} DAYS")
+    logger.info(f"===== KHỞI TẠO DỮ LIỆU {FORM_DAYS} NGÀY (API v3) =====")
     end_date = datetime.now()
     start_date = end_date - timedelta(days=FORM_DAYS)
-    total_matches = 0
-    current = start_date
+    
+    total_matches_processed = 0
+    unique_players = set()
 
+    current = start_date
     while current <= end_date:
         day_str = current.strftime("%Y%m%d")
-        matches = fetch_finished_matches(day_str)
+        logger.info(f"Xử lý ngày: {day_str}")
 
-        for m in matches:
-            if process_match(m):
-                total_matches += 1
+        page = 1
+        total_pages = 1
 
-        print(f"Ngày {day_str}: {len(matches)} trận")
+        while page <= total_pages:
+            matches, total_pages = fetch_finished_matches(day=day_str, page=page)
+
+            day_processed = 0
+            for m in matches:
+                if process_match(m):
+                    day_processed += 1
+                    total_matches_processed += 1
+                    home = extract_player(m["home"]["name"])
+                    away = extract_player(m["away"]["name"])
+                    unique_players.add(home)
+                    unique_players.add(away)
+
+            logger.info(f"  Trang {page}/{total_pages} → xử lý {day_processed} trận")
+            page += 1
+            time.sleep(0.9)  # tránh rate limit
+
         current += timedelta(days=1)
-        time.sleep(0.6)
+        time.sleep(0.7)
 
-    logger.info(f"INIT DONE")
+    logger.info("===== KHỞI TẠO HOÀN TẤT =====")
+    logger.info(f"Tổng trận xử lý: {total_matches_processed}")
+    logger.info(f"Player unique: {len(unique_players)}")
 
+    # In top players để kiểm tra
+    top_players = sorted(
+        player_history.items(),
+        key=lambda x: len(x[1]["matches"]),
+        reverse=True
+    )[:10]
+
+    logger.info("Top 10 players (số trận nhiều nhất):")
+    for p, data in top_players:
+        total = data["win"] + data["draw"] + data["lose"]
+        wr = round(data["win"] / total * 100, 1) if total > 0 else 0.0
+        logger.info(f"  {p:28} | {total:4} trận | W/D/L = {data['win']:3}/{data['draw']:3}/{data['lose']:3} | WR={wr:5.1f}%")
 
 def process_match(m):
     eid = m.get('id')
-    if not eid or eid in processed_ids:
-        logger.debug("Match không có ID")
-        return False  # Trả về False nếu ID không hợp lệ hoặc đã được xử lý
-
-    # Chỉ xử lý trận đã kết thúc
-    if m.get('time_status') not in ('3', 3):
-        logger.debug(f"Match {eid} chưa kết thúc")
+    if not eid:
+        return False
+    if eid in processed_ids:
         return False
 
-    if not m.get("ss"):
-        logger.debug(f"Match {eid} không có tỷ số")
+    if str(m.get('time_status')) != '3':
+        return False
+
+    ss = m.get("ss")
+    if not ss:
         return False
 
     try:
-        hg, ag = map(int, m["ss"].split("-"))
-    except ValueError:
-        logger.debug(f"Parse score fail: {m.get('ss')}")
+        hg, ag = map(int, ss.split("-"))
+    except:
         return False
 
-    home = extract_player(m["home"]["name"])
-    away = extract_player(m["away"]["name"])
-    ts = int(m.get("time", 0))
-    logger.debug(f"📊 RESULT {home} {hg}-{ag} {away}")
+    home_raw = m["home"]["name"]
+    away_raw = m["away"]["name"]
+    home = extract_player(home_raw)
+    away = extract_player(away_raw)
+
+    logger.debug(f"XỬ LÝ {eid} | {home} vs {away} | {hg}-{ag}")
 
     if hg > ag:
         player_history[home]["win"] += 1
@@ -155,31 +221,32 @@ def process_match(m):
         player_history[home]["draw"] += 1
         player_history[away]["draw"] += 1
 
-    player_history[home]["matches"].append(
-        {"home": True, "hg": hg, "ag": ag, "ts": ts}
-    )
-    player_history[away]["matches"].append(
-        {"home": False, "hg": hg, "ag": ag, "ts": ts}
-    )
-
-    # 🔥 GIỚI HẠN LỊCH SỬ – CHỈ GIỮ N TRẬN GẦN NHẤT
-    player_history[home]["matches"] = player_history[home]["matches"][-MAX_HISTORY_MATCHES:]
-    player_history[away]["matches"] = player_history[away]["matches"][-MAX_HISTORY_MATCHES:]
+    player_history[home]["matches"].append({"home": True,  "hg": hg, "ag": ag, "ts": int(m.get("time", 0))})
+    player_history[away]["matches"].append({"home": False, "hg": hg, "ag": ag, "ts": int(m.get("time", 0))})
 
     processed_ids.add(eid)
-    return True  # Trả về True nếu trận đấu được xử lý thành công
+    return True
 
 def update_player_history():
-    logger.debug("Update player history")
-    for m in fetch_finished_matches():
-        process_match(m)
+    logger.info("Cập nhật lịch sử mới nhất (API v3 - page 1)")
+    new_count = 0
+    matches, _ = fetch_finished_matches(page=1)
+    for m in matches:
+        if process_match(m):
+            new_count += 1
+    logger.info(f"Đã xử lý thêm {new_count} trận mới")
 
 def get_winrate(player):
+    if player not in player_history:
+        return 0.0
+
     s = player_history[player]
     total = s["win"] + s["draw"] + s["lose"]
     if total < MIN_MATCHES:
-        logger.debug(f"{player} chưa đủ match ({total})")
         return 0.0
+    if total == 0:
+        return 0.0
+
     return round(s["win"] / total * 100, 1)
 
 def get_last_result(player):
@@ -197,30 +264,22 @@ def get_last_result(player):
         return "W" if hg > ag else "L"
     return "W" if ag > hg else "L"
 
-# ================= API – INPLAY (BETSAPI) =================
+# ================= INPLAY =================
 def fetch_inplay_matches_betsapi():
+    url = f"{BETSAPI_BASE}/events/inplay?sport_id={SPORT_ID}&league_id={LEAGUE_ID}&token={API_TOKEN}"
     try:
-        url = f"{BETSAPI_BASE}/events/inplay?sport_id={SPORT_ID}&league_id={LEAGUE_ID}&token={API_TOKEN}"
         r = requests.get(url, timeout=10).json()
-        
         matches = r.get("results", [])
-        logger.debug(f"Inplay raw={len(matches)}")
-        
-        # Optional: lọc thêm nếu API trả nhầm (hiếm nhưng an toàn)
-        valid_matches = []
+        valid = []
         for m in matches:
             if str(m.get("time_status")) != "1":
                 continue
-            # Nếu muốn lọc chặt hơn về "đang thực sự trong game/set"
-            ss = m.get("ss")
-            if ss is None or ss.strip() in ["", "0-0", "*"]:  # ví dụ loại các trận chưa có điểm
-                continue  # hoặc log: "Bỏ qua: chưa có điểm số rõ ràng"
-                
-            valid_matches.append(m)
-        
-        logger.info(f"Inplay valid={len(valid_matches)}")
-        return valid_matches
-    
+            ss = m.get("ss", "")
+            if not ss or ss.strip() in ["", "0-0", "*"]:
+                continue
+            valid.append(m)
+        logger.info(f"Inplay valid: {len(valid)} trận")
+        return valid
     except Exception as e:
         logger.error(f"Inplay fetch error: {e}")
         return []
@@ -228,17 +287,11 @@ def fetch_inplay_matches_betsapi():
 def get_best_inplay_candidate():
     matches = fetch_inplay_matches_betsapi()
     if not matches:
-        logger.debug("Không có inplay")
         return None
 
     for m in matches:
-        if m.get("time_status") != "1":
-            continue
-
         mid = m.get("id")
-        logger.debug(f"CHECK match_id={mid}")
         if not mid or mid in bet_done_match_ids:
-            logger.debug("Đã bet match này")
             continue
 
         home = extract_player(m["home"]["name"])
@@ -248,60 +301,35 @@ def get_best_inplay_candidate():
         wr_a = get_winrate(away)
         diff = abs(wr_h - wr_a)
 
-        # ── DEBUG CHI TIẾT ───────────────────────────────────────────────
-        logger.info("-" * 70)
-        logger.info(f"INPLAY: {m['home']['name']} vs {m['away']['name']}")
-        logger.info(f" HOME: {home} | WR={wr_h}% | Last={get_last_result(home) or 'N/A'}")
-        logger.info(f" AWAY: {away} | WR={wr_a}% | Last={get_last_result(away) or 'N/A'}")
-        logger.info(f" DIFF WR: {diff}%")
-
         if diff <= WINRATE_DIFF_THRESHOLD:
-            logger.info(f"❌ Loại: Chênh lệch WR không đủ ({diff} <= {WINRATE_DIFF_THRESHOLD})")
             continue
 
         if wr_h > wr_a:
             high, low = home, away
             high_wr, low_wr = wr_h, wr_a
-            is_home = True
+            is_home_high = True
         else:
             high, low = away, home
             high_wr, low_wr = wr_a, wr_h
-            is_home = False
+            is_home_high = False
 
-        logger.info(f" → High: {high} ({high_wr}%) | Low: {low} ({low_wr}%)")
-
-        if high_wr <= MIN_HIGH_WR:
-            logger.info(f"❌ Loại: High WR quá thấp ({high_wr} <= {MIN_HIGH_WR})")
+        if high_wr <= MIN_HIGH_WR or low_wr >= MAX_LOW_WR:
             continue
 
-        if low_wr >= MAX_LOW_WR:
-            logger.info(f"❌ Loại: Low WR quá cao ({low_wr} >= {MAX_LOW_WR})")
+        if get_last_result(high) != "W":
             continue
 
-        last_high = get_last_result(high)
-        if last_high != "W":
-            logger.info(f"❌ Loại: High player không thắng trận gần nhất (Last = {last_high or 'N/A'})")
-            continue
-
-        logger.info("✅ THỎA ĐIỀU KIỆN → SẼ BET")
-        # ────────────────────────────────────────────────────────────────
-
+        logger.info(f"THỎA MÃN → Bet {high} ({high_wr}%) vs {low} ({low_wr}%)")
         return {
             "match_id": mid,
             "player": high,
-            "is_home": is_home
+            "is_home": is_home_high
         }
 
     return None
 
-# ================= SELENIUM =================
-options = Options()
-options.add_argument("--start-maximized")
-options.add_argument("--disable-blink-features=AutomationControlled")
-
-driver = webdriver.Chrome(options=options)
-driver.get(WEB_URL)
-close_popup_by_center_click(driver)
+# ================= SELENIUM FUNCTIONS =================
+# (giữ nguyên như bạn đã cung cấp, chỉ thêm một số try-except nhỏ nếu cần)
 
 def find_volta_league():
     leagues = driver.find_elements(
@@ -320,122 +348,78 @@ def find_volta_league():
             pass
     return None
 
-def ensure_league_expanded(league_element, timeout=5):
-    """
-    Đảm bảo league đã mở rộng để hiển thị events.
-    Return: True nếu đã mở (hoặc đã mở sẵn), False nếu fail.
-    """
+def ensure_league_expanded(league_element, timeout=6):
     try:
-        # Check xem đã có events chưa
         events = league_element.find_elements(
             By.CSS_SELECTOR,
             "div.eventlist_asia_fe_EventListLeague_singleEvent"
         )
         if events:
-            logger.debug("League đã mở sẵn, có events.")
             return True
 
-        # Tìm header để click (chính xác hơn click trực tiếp league_element)
         header = WebDriverWait(league_element, timeout).until(
             EC.element_to_be_clickable(
                 (By.CSS_SELECTOR, "div.eventlist_asia_fe_EventListLeague_headerWrapper")
             )
         )
-        
         header.click()
-        # Wait cho events xuất hiện thay vì sleep cứng
+
         WebDriverWait(league_element, timeout).until(
             lambda d: d.find_elements(
                 By.CSS_SELECTOR,
                 "div.eventlist_asia_fe_EventListLeague_singleEvent"
             )
         )
-        
-        # Optional: lấy tên league để log động
-        try:
-            league_name = league_element.find_element(
-                By.CSS_SELECTOR, ".league-name-or-similar-selector"  # thay bằng selector thật
-            ).text.strip()
-        except:
-            league_name = "Unknown League"
-            
-        logger.info(f"🔽 Đã xổ giải: {league_name}")
         return True
-        
-    except (TimeoutException, ElementClickInterceptedException) as e:
-        logger.warning(f"⚠️ Không xổ được league: {str(e)}")
-        return False
     except Exception as e:
-        logger.error(f"❌ Lỗi mở league: {str(e)}")
+        logger.warning(f"Không mở được league: {e}")
         return False
 
-from selenium.common.exceptions import StaleElementReferenceException, ElementClickInterceptedException, TimeoutException
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-
-def open_event_page_by_player(driver, player_name, max_retry=3, timeout=8):
-    """
-    Tìm trận chứa player_name và click ô thời gian để mở trang trận.
-    Return: True nếu thành công, False nếu không tìm thấy hoặc fail sau retry.
-    """
+def open_event_page_by_player(driver, player_name, max_retry=3, timeout=10):
     for attempt in range(max_retry):
         try:
-            # Wait cho list events ổn định
             WebDriverWait(driver, timeout).until(
                 EC.presence_of_element_located(
                     (By.CSS_SELECTOR, "div.eventlist_asia_fe_EventListLeague_singleEvent")
                 )
             )
-            
+
             events = driver.find_elements(
                 By.CSS_SELECTOR,
                 "div.eventlist_asia_fe_EventListLeague_singleEvent"
             )
-            
+
             for event in events:
                 teams = event.find_elements(
                     By.CSS_SELECTOR,
                     "span.eventlist_asia_fe_EventCard_teamNameText"
                 )
                 team_names = [t.text.strip() for t in teams if t.text.strip()]
-                
+
                 if not any(player_name.lower() in t.lower() for t in team_names):
                     continue
-                
-                # Scroll & wait clickable
+
                 time_cell = WebDriverWait(event, 5).until(
                     EC.element_to_be_clickable(
                         (By.CSS_SELECTOR, "div.eventlist_asia_fe_sharedGrid_timeCell")
                     )
                 )
-                
-                driver.execute_script(
-                    "arguments[0].scrollIntoView({block: 'center'});",
-                    time_cell
-                )
-                
-                # Thử native click trước, fallback JS nếu fail
+
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", time_cell)
+
                 try:
                     time_cell.click()
-                except (ElementClickInterceptedException, TimeoutException):
-                    logger.warning("Native click fail → fallback JS click")
+                except:
                     driver.execute_script("arguments[0].click();", time_cell)
-                
-                logger.info(f"➡️ Đã click mở trang trận cho player: {player_name}")
+
+                logger.info(f"Đã mở trang trận cho {player_name}")
                 return True
-            
-            logger.warning(f"Attempt {attempt+1}: Không tìm thấy trận chứa '{player_name}'")
-        
-        except StaleElementReferenceException:
-            logger.debug(f"Stale element ở attempt {attempt+1} → retry sau 0.5s")
-            time.sleep(0.5)
-            continue
+
         except Exception as e:
-            logger.error(f"Lỗi mở trang trận attempt {attempt+1}: {str(e)}")
-            time.sleep(1)
-    
-    logger.warning(f"❌ Không mở được trang trận cho '{player_name}' sau {max_retry} lần thử")
+            logger.debug(f"Attempt {attempt+1} lỗi: {e}")
+            time.sleep(0.6)
+
+    logger.warning(f"Không mở được trang trận cho {player_name}")
     return False
 
 def click_team(player):
@@ -653,65 +637,107 @@ def go_back():
 def wait_and_check_result():
     global current_stake
     logger.info("⏳ Chờ kết quả trận...")
-    time.sleep(220)
+    time.sleep(5)
+
+    match_id_str = str(last_bet["match_id"])
 
     while True:
-        for m in fetch_finished_matches():
-            if str(m.get("id")) != str(last_bet["match_id"]):
-                continue
+        try:
+            matches, total_pages = fetch_finished_matches(page=1)
+            logger.info(f"Check kết quả: Page 1 có {len(matches)} trận")
 
-            h, a = map(int, m["ss"].split("-"))
-            win = (h > a) if last_bet["is_home"] else (a > h)
+            for m in matches:
+                if not isinstance(m, dict):
+                    logger.warning(f"Bỏ qua item không phải dict: {m}")
+                    continue
 
-            if win:
-                logger.info("✅ THẮNG – reset stake")
-                current_stake = BASE_STAKE
-            else:
-                logger.warning("❌ THUA – gấp đôi stake")
-                current_stake *= 2
-                if current_stake > MAX_STAKE:
-                    logger.error("⛔ Stake quá lớn – DỪNG BOT")
-                    exit()
-            return
-        time.sleep(15)
-    logger.warning("Không tìm thấy kết quả sau thời gian chờ → có thể lỗi API")
+                current_id = str(m.get("id"))
+                if current_id != match_id_str:
+                    continue
 
+                ss = m.get("ss")
+                if not ss or "-" not in ss:
+                    logger.warning(f"Trận {current_id} thiếu ss hoặc format sai: {ss}")
+                    continue
+
+                try:
+                    h, a = map(int, ss.split("-"))
+                except:
+                    logger.warning(f"Không parse được score: {ss}")
+                    continue
+
+                win = (h > a) if last_bet["is_home"] else (a > h)
+
+                if win:
+                    logger.info("✅ THẮNG – reset stake")
+                    current_stake = BASE_STAKE
+                else:
+                    logger.warning("❌ THUA – gấp đôi stake")
+                    current_stake *= 2
+                    if current_stake > MAX_STAKE:
+                        logger.error("⛔ Stake quá lớn – DỪNG BOT")
+                        exit()
+
+                return  # Thoát hàm sau khi xử lý xong
+
+            logger.debug("Chưa thấy kết quả → chờ thêm...")
+            time.sleep(5)
+
+        except Exception as e:
+            logger.error(f"Lỗi khi check kết quả: {e}")
+            time.sleep(10)
+            
 # ================= MAIN =================
 if __name__ == "__main__":
+    options = Options()
+    options.add_argument("--start-maximized")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    driver = webdriver.Chrome(options=options)
+    driver.get(WEB_URL)
+    close_popup_by_center_click(driver)
+
     initialize_historical_data()
 
-while True:
-    logger.info("LOOP START")
-    update_player_history()
+    while True:
+        logger.info("=== VÒNG LẶP MỚI ===")
+        update_player_history()
 
-    candidate = get_best_inplay_candidate()
-    if not candidate:
-        logger.info("Chưa có kèo → sleep")
-        time.sleep(2)
-        continue
+        candidate = get_best_inplay_candidate()
+        if not candidate:
+            logger.info("Chưa có kèo phù hợp → chờ 3s")
+            time.sleep(3)
+            continue
 
-    logger.info(f"Chuẩn bị bet: {candidate}")
-    league = find_volta_league()
-    if not league:
-        time.sleep(2)
-        continue
+        logger.info(f"Chuẩn bị đặt cược: {candidate}")
 
-    ensure_league_expanded(league)
+        league = find_volta_league()
+        if not league:
+            time.sleep(3)
+            continue
 
-    if not open_event_page_by_player(driver, candidate["player"]):
-        continue
+        if not ensure_league_expanded(league):
+            time.sleep(3)
+            continue
 
-    if not click_team(candidate["player"]):
+        if not open_event_page_by_player(driver, candidate["player"]):
+            go_back()
+            continue
+
+        if not click_team(candidate["player"]):
+            go_back()
+            continue
+
+        if not set_stake(current_stake):
+            go_back()
+            continue
+
+        if not place_bet():
+            go_back()
+            continue
+
+        logger.info(f"ĐÃ ĐẶT CƯỢC | Stake = {current_stake}")
+        bet_done_match_ids.add(candidate["match_id"])
+        last_bet.update(candidate)
+
         go_back()
-        continue
-
-    set_stake(current_stake)
-    place_bet()
-
-    logger.info(f"🎉 ĐÃ ĐẶT CƯỢC | Stake={current_stake}")
-
-    bet_done_match_ids.add(candidate["match_id"])
-    last_bet.update(candidate)
-
-    go_back()
-    wait_and_check_result()
+        wait_and_check_result()
