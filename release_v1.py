@@ -27,7 +27,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ================= CONFIG =================
-WEB_URL = "https://prod20091.fxf774.com/vi/asian-view/live/B%C3%B3ng-%C4%91%C3%A1?operatorToken=43-7ec295a74440808072cfbf96c4bdfa4d"
+WEB_URL = "https://prod20091.fxf774.com/vi/asian-view/live/B%C3%B3ng-%C4%91%C3%A1?operatorToken=43-bf8a0b751463efee7420af45cf6bf8a1"
 
 API_TOKEN = "247066-ZFfFhtCGjGEUhw"
 LEAGUE_ID = '38439'           # E-Soccer Volta league ID
@@ -48,7 +48,7 @@ MIN_HIGH_WR = 30.0
 MAX_LOW_WR = 60.0
 WINRATE_DIFF_THRESHOLD = 15.0
 
-BASE_STAKE = 50
+BASE_STAKE = 40
 current_stake = BASE_STAKE
 MAX_STAKE = 3300
 
@@ -122,7 +122,6 @@ def fetch_finished_matches(day=None, page=1, league_id=LEAGUE_ID):
         pager = data.get("pager", {})
         total_pages = pager.get("total_pages", 1)
 
-        logger.info(f"Page {page} | Trận: {len(results)} | Total pages: {total_pages}")
         return results, total_pages
 
     except requests.exceptions.RequestException as e:
@@ -228,13 +227,11 @@ def process_match(m):
     return True
 
 def update_player_history():
-    logger.info("Cập nhật lịch sử mới nhất (API v3 - page 1)")
     new_count = 0
     matches, _ = fetch_finished_matches(page=1)
     for m in matches:
         if process_match(m):
             new_count += 1
-    logger.info(f"Đã xử lý thêm {new_count} trận mới")
 
 def get_winrate(player):
     if player not in player_history:
@@ -287,7 +284,6 @@ def fetch_inplay_matches_betsapi():
                 continue
             valid.append(m)
         
-        logger.info(f"Inplay (v3) valid trong league {LEAGUE_ID}: {len(valid)} trận")
         return valid
 
     except Exception as e:
@@ -654,7 +650,6 @@ def wait_and_check_result():
     while True:
         try:
             matches, total_pages = fetch_finished_matches(page=1)
-            logger.info(f"Check kết quả: Page 1 có {len(matches)} trận")
 
             for m in matches:
                 if not isinstance(m, dict):
@@ -709,12 +704,10 @@ if __name__ == "__main__":
     initialize_historical_data()
 
     while True:
-        logger.info("=== VÒNG LẶP MỚI ===")
         update_player_history()
 
         candidate = get_best_inplay_candidate()
         if not candidate:
-            logger.info("Chưa có kèo phù hợp → chờ 3s")
             time.sleep(3)
             continue
 
