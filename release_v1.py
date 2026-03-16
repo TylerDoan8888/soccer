@@ -72,6 +72,7 @@ def extract_player(full):
 
 # ================= POPUP =================
 def close_popup_by_center_click(driver, wait_time=4):
+    logger.debug("Thử đóng popup bằng click giữa màn hình")
     time.sleep(wait_time)
     w = driver.execute_script("return window.innerWidth")
     h = driver.execute_script("return window.innerHeight")
@@ -86,15 +87,15 @@ def fetch_finished_matches(day=None):
         params += f"&day={day}"
     
     try:
+        logger.debug(f"📡 Fetch finished matches | day={day}")
         r = requests.get(f"{B365_API_BASE}/events/ended{params}", timeout=15).json()
         return r.get("results", [])
     except Exception as e:
-        print(f"Lỗi khi lấy dữ liệu cho ngày {day}: {e}")
+        logger.error(f"❌ Fetch finished matches error: {e}")
         return []
 
 def initialize_historical_data():
-    print(f"\n📥 KHỞI TẠO DỮ LIỆU {FORM_DAYS} NGÀY GẦN NHẤT\n")
-
+    logger.info(f"📥 INIT DATA {FORM_DAYS} DAYS")
     end_date = datetime.now()
     start_date = end_date - timedelta(days=FORM_DAYS)
     total_matches = 0
@@ -112,36 +113,34 @@ def initialize_historical_data():
         current += timedelta(days=1)
         time.sleep(0.6)
 
-    print(f"\n✅ HOÀN TẤT: {total_matches} trận trong {FORM_DAYS} ngày\n")
-    print("📊 SAMPLE PLAYER STATS:")
-    for player, stats in list(player_history.items())[:5]:  # Hiển thị 5 cầu thủ đầu tiên
-        total_games = stats['win'] + stats['draw'] + stats['lose']
-        if total_games == 0:
-            continue
-        win_rate = round(stats['win'] / total_games * 100, 1)
-        print(f"  {player}: WR={win_rate}% | Last={get_last_result(player)}")
+    logger.info(f"INIT DONE")
 
 
 def process_match(m):
     eid = m.get('id')
     if not eid or eid in processed_ids:
+        logger.debug("Match không có ID")
         return False  # Trả về False nếu ID không hợp lệ hoặc đã được xử lý
 
     # Chỉ xử lý trận đã kết thúc
     if m.get('time_status') not in ('3', 3):
+        logger.debug(f"Match {eid} chưa kết thúc")
         return False
 
     if not m.get("ss"):
+        logger.debug(f"Match {eid} không có tỷ số")
         return False
 
     try:
         hg, ag = map(int, m["ss"].split("-"))
     except ValueError:
+        logger.debug(f"Parse score fail: {m.get('ss')}")
         return False
 
     home = extract_player(m["home"]["name"])
     away = extract_player(m["away"]["name"])
     ts = int(m.get("time", 0))
+    logger.debug(f"📊 RESULT {home} {hg}-{ag} {away}")
 
     if hg > ag:
         player_history[home]["win"] += 1
@@ -163,6 +162,7 @@ def process_match(m):
     return True  # Trả về True nếu trận đấu được xử lý thành công
 
 def update_player_history():
+    logger.debug("Update player history")
     for m in fetch_finished_matches():
         process_match(m)
 
@@ -170,6 +170,7 @@ def get_winrate(player):
     s = player_history[player]
     total = s["win"] + s["draw"] + s["lose"]
     if total < MIN_MATCHES:
+        logger.debug(f"{player} chưa đủ match ({total})")
         return 0.0
     return round(s["win"] / total * 100, 1)
 
@@ -191,15 +192,11 @@ def get_last_result(player):
 # ================= API – INPLAY (BETSAPI) =================
 def fetch_inplay_matches_betsapi():
     try:
-        url = f"{BETSAPI_BASE}/events/inplay"
-        params = {
-            "token": API_TOKEN,
-            "sport_id": SPORT_ID,
-            "league_id": LEAGUE_ID,          # thêm vào để giống Code 1
-        }
-        r = requests.get(url, params=params, timeout=10).json()
+        url = f"{BETSAPI_BASE}/events/inplay?sport_id={SPORT_ID}&league_id={LEAGUE_ID}&token={API_TOKEN}"
+        r = requests.get(url, timeout=10).json()
         
         matches = r.get("results", [])
+        logger.debug(f"Inplay raw={len(matches)}")
         
         # Optional: lọc thêm nếu API trả nhầm (hiếm nhưng an toàn)
         valid_matches = []
@@ -213,15 +210,17 @@ def fetch_inplay_matches_betsapi():
                 
             valid_matches.append(m)
         
+        logger.info(f"Inplay valid={len(valid_matches)}")
         return valid_matches
     
     except Exception as e:
-        print(f"Lỗi fetch inplay BetsAPI: {e}")
+        logger.error(f"Inplay fetch error: {e}")
         return []
 
 def get_best_inplay_candidate():
     matches = fetch_inplay_matches_betsapi()
     if not matches:
+        logger.debug("Không có inplay")
         return None
 
     for m in matches:
@@ -229,7 +228,9 @@ def get_best_inplay_candidate():
             continue
 
         mid = m.get("id")
+        logger.debug(f"CHECK match_id={mid}")
         if not mid or mid in bet_done_match_ids:
+            logger.debug("Đã bet match này")
             continue
 
         home = extract_player(m["home"]["name"])
@@ -239,7 +240,15 @@ def get_best_inplay_candidate():
         wr_a = get_winrate(away)
         diff = abs(wr_h - wr_a)
 
+        # ── DEBUG CHI TIẾT ───────────────────────────────────────────────
+        logger.info("-" * 70)
+        logger.info(f"INPLAY: {m['home']['name']} vs {m['away']['name']}")
+        logger.info(f" HOME: {home} | WR={wr_h}% | Last={get_last_result(home) or 'N/A'}")
+        logger.info(f" AWAY: {away} | WR={wr_a}% | Last={get_last_result(away) or 'N/A'}")
+        logger.info(f" DIFF WR: {diff}%")
+
         if diff <= WINRATE_DIFF_THRESHOLD:
+            logger.info(f"❌ Loại: Chênh lệch WR không đủ ({diff} <= {WINRATE_DIFF_THRESHOLD})")
             continue
 
         if wr_h > wr_a:
@@ -251,16 +260,23 @@ def get_best_inplay_candidate():
             high_wr, low_wr = wr_a, wr_h
             is_home = False
 
+        logger.info(f" → High: {high} ({high_wr}%) | Low: {low} ({low_wr}%)")
+
         if high_wr <= MIN_HIGH_WR:
-            continue
-        if low_wr >= MAX_LOW_WR:
-            continue
-        if get_last_result(high) != "W":
+            logger.info(f"❌ Loại: High WR quá thấp ({high_wr} <= {MIN_HIGH_WR})")
             continue
 
-        logger.info(
-            f"🎯 BET {high} | WR={high_wr}% vs {low_wr}% | DIFF={diff}%"
-        )
+        if low_wr >= MAX_LOW_WR:
+            logger.info(f"❌ Loại: Low WR quá cao ({low_wr} >= {MAX_LOW_WR})")
+            continue
+
+        last_high = get_last_result(high)
+        if last_high != "W":
+            logger.info(f"❌ Loại: High player không thắng trận gần nhất (Last = {last_high or 'N/A'})")
+            continue
+
+        logger.info("✅ THỎA ĐIỀU KIỆN → SẼ BET")
+        # ────────────────────────────────────────────────────────────────
 
         return {
             "match_id": mid,
@@ -650,18 +666,23 @@ def wait_and_check_result():
                     exit()
             return
         time.sleep(15)
+    logger.warning("Không tìm thấy kết quả sau thời gian chờ → có thể lỗi API")
 
 # ================= MAIN =================
-initialize_historical_data()
+if __name__ == "__main__":
+    initialize_historical_data()
 
 while True:
+    logger.info("LOOP START")
     update_player_history()
 
     candidate = get_best_inplay_candidate()
     if not candidate:
+        logger.info("Chưa có kèo → sleep")
         time.sleep(10)
         continue
 
+    logger.info(f"Chuẩn bị bet: {candidate}")
     league = find_volta_league()
     if not league:
         time.sleep(5)
