@@ -266,24 +266,34 @@ def get_last_result(player):
 
 # ================= INPLAY =================
 def fetch_inplay_matches_betsapi():
-    url = f"{BETSAPI_BASE}/events/inplay?sport_id={SPORT_ID}&league_id={LEAGUE_ID}&token={API_TOKEN}"
+    url = f"{B365_API_BASE}/events/inplay?sport_id={SPORT_ID}&league_id={LEAGUE_ID}&token={API_TOKEN}"
+    # Hoặc nếu muốn lấy tất cả soccer rồi lọc thủ công: bỏ league_id đi
+    # url = f"{B365_API_BASE}/events/inplay?sport_id={SPORT_ID}&token={API_TOKEN}"
+
     try:
-        r = requests.get(url, timeout=10).json()
+        r = requests.get(url, timeout=8).json()
+        if r.get("success") == 0:
+            logger.error(f"API error: {r.get('error')}")
+            return []
+
         matches = r.get("results", [])
+        
         valid = []
         for m in matches:
-            if str(m.get("time_status")) != "1":
+            if str(m.get("time_status")) != "1":  # chỉ lấy đang diễn ra
                 continue
             ss = m.get("ss", "")
-            if not ss or ss.strip() in ["", "0-0", "*"]:
+            if not ss or ss.strip() in ["", "0-0", "*"]:  # loại bỏ trận chưa có tỷ số hoặc invalid
                 continue
             valid.append(m)
-        logger.info(f"Inplay valid: {len(valid)} trận")
+        
+        logger.info(f"Inplay (v3) valid trong league {LEAGUE_ID}: {len(valid)} trận")
         return valid
-    except Exception as e:
-        logger.error(f"Inplay fetch error: {e}")
-        return []
 
+    except Exception as e:
+        logger.error(f"Inplay v3 fetch error: {e}")
+        return []
+    
 def get_best_inplay_candidate():
     matches = fetch_inplay_matches_betsapi()
     if not matches:
@@ -686,7 +696,7 @@ def wait_and_check_result():
         except Exception as e:
             logger.error(f"Lỗi khi check kết quả: {e}")
             time.sleep(10)
-            
+
 # ================= MAIN =================
 if __name__ == "__main__":
     options = Options()
