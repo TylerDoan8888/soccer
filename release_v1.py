@@ -14,7 +14,6 @@ from selenium.common.exceptions import StaleElementReferenceException
 from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException
 
 
-processed_ids = set()
 
 # ================= LOGGER =================
 logging.basicConfig(
@@ -31,6 +30,8 @@ LEAGUE_ID = '38439'
 
 # history / result
 B365_API_BASE = "https://api.b365api.com/v3"
+
+MAX_HISTORY_MATCHES = 300
 
 # inplay (BẮT BUỘC)
 BETSAPI_BASE = "https://api.betsapi.com/v1"
@@ -59,6 +60,8 @@ player_history = defaultdict(lambda: {
     "lose": 0,
     "matches": []
 })
+
+processed_ids = set()
 
 last_bet = {
     "match_id": None,
@@ -159,6 +162,11 @@ def process_match(m):
         {"home": False, "hg": hg, "ag": ag, "ts": ts}
     )
 
+    # 🔥 GIỚI HẠN LỊCH SỬ – CHỈ GIỮ N TRẬN GẦN NHẤT
+    player_history[home]["matches"] = player_history[home]["matches"][-MAX_HISTORY_MATCHES:]
+    player_history[away]["matches"] = player_history[away]["matches"][-MAX_HISTORY_MATCHES:]
+
+    processed_ids.add(eid)
     return True  # Trả về True nếu trận đấu được xử lý thành công
 
 def update_player_history():
