@@ -24,7 +24,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ================= CONFIG =================
-WEB_URL = "https://prod20091.fxf774.com/vi/asian-view/live/B%C3%B3ng-%C4%91%C3%A1?operatorToken=43-be38e386ed5bcfa2f3bbec8c4d2fea1f"
+WEB_URL = "https://prod20091.fxf774.com/vi/asian-view/live/B%C3%B3ng-%C4%91%C3%A1?operatorToken=43-7ec295a74440808072cfbf96c4bdfa4d"
 
 API_TOKEN = "247066-ZFfFhtCGjGEUhw"
 LEAGUE_ID = '38439'
@@ -645,7 +645,7 @@ def go_back():
 def wait_and_check_result():
     global current_stake
     logger.info("⏳ Chờ kết quả trận...")
-    time.sleep(300)
+    time.sleep(220)
 
     while True:
         for m in fetch_finished_matches():
@@ -679,18 +679,18 @@ while True:
     candidate = get_best_inplay_candidate()
     if not candidate:
         logger.info("Chưa có kèo → sleep")
-        time.sleep(10)
+        time.sleep(2)
         continue
 
     logger.info(f"Chuẩn bị bet: {candidate}")
     league = find_volta_league()
     if not league:
-        time.sleep(5)
+        time.sleep(2)
         continue
 
     ensure_league_expanded(league)
 
-    if not open_event_page_by_player(candidate["player"]):
+    if not open_event_page_by_player(driver, candidate["player"]):
         continue
 
     if not click_team(candidate["player"]):
