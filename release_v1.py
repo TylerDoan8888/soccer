@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 WEB_URL = "https://prod20091.fxf774.com/vi/asian-view/live/B%C3%B3ng-%C4%91%C3%A1?operatorToken=43-be38e386ed5bcfa2f3bbec8c4d2fea1f"
 
 API_TOKEN = "247066-ZFfFhtCGjGEUhw"
+LEAGUE_ID = '38439'
 
 # history / result
 B365_API_BASE = "https://api.b365api.com/v3"
@@ -412,16 +413,6 @@ def open_event_page_by_player(driver, player_name, max_retry=3, timeout=8):
     
     logger.warning(f"❌ Không mở được trang trận cho '{player_name}' sau {max_retry} lần thử")
     return False
-
-Cảm ơn bạn đã phản hồi! Dưới đây là phiên bản khuyến nghị đã được chỉnh sửa lại:
-
-Tên hàm đổi thành def click_team(player): (như bạn yêu cầu).
-Giữ nguyên các cải tiến tốt nhất từ phân tích trước (retry khi stale, fallback JS click, log hợp lý, wait chính xác, match tên an toàn).
-
-Pythonfrom selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException, ElementClickInterceptedException
 
 def click_team(player):
     """
