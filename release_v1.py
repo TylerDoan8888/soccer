@@ -112,23 +112,22 @@ def fetch_finished_matches(day=None, page=1, league_id=LEAGUE_ID):
 
     url = f"{B365_API_BASE}/events/ended{params}"
     logger.debug(f"Fetch ended v3 page {page}: {url}")
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
 
-    try:
-        resp = requests.get(url, timeout=12)
-        resp.raise_for_status()
-        data = resp.json()
+            results = data.get("results", [])
+            pager = data.get("pager", {})
+            total_pages = pager.get("total_pages", 1)
 
-        results = data.get("results", [])
-        pager = data.get("pager", {})
-        total_pages = pager.get("total_pages", 1)
+            return results, total_pages
 
-        return results, total_pages
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Fetch ended v3 error (page {page}): {e}")
-        return [], 1
-    except ValueError as e:
-        logger.error(f"JSON parse error: {e}")
+        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as e:
+                logger.warning(f"Attempt {attempt+1} timeout: {e} → thử lại sau 5s")
+                time.sleep(5 * (attempt + 1))  # backoff: 5s, 10s, 15s
+        logger.error("Fetch failed sau 3 lần thử")
         return [], 1
 
 def initialize_historical_data():
@@ -629,15 +628,15 @@ def go_back():
     except Exception as e:
         logger.warning(f"❌ Lỗi click breadcrumb: {str(e)}")
 
-    # Fallback: dùng driver.back() nếu breadcrumb không hoạt động
-    try:
-        driver.back()
-        logger.info("↩️ Fallback: dùng driver.back()")
-        time.sleep(2)
-        return True
-    except Exception as e:
-        logger.warning(f"❌ Fallback driver.back() cũng fail: {str(e)}")
-        return False
+    # # Fallback: dùng driver.back() nếu breadcrumb không hoạt động
+    # try:
+    #     driver.back()
+    #     logger.info("↩️ Fallback: dùng driver.back()")
+    #     time.sleep(2)
+    #     return True
+    # except Exception as e:
+    #     logger.warning(f"❌ Fallback driver.back() cũng fail: {str(e)}")
+    #     return False
 
 # ================= CHECK RESULT =================
 def wait_and_check_result():
@@ -723,7 +722,6 @@ if __name__ == "__main__":
             continue
 
         if not open_event_page_by_player(driver, candidate["player"]):
-            go_back()
             continue
 
         if not click_team(candidate["player"]):
