@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 # ================= LOGGER =================
 logging.basicConfig(
-    level=logging.DEBUG,          # Giữ DEBUG để thấy hết log chi tiết
+    level=logging.DEBUG,
     format="%(asctime)s | %(levelname)-7s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
@@ -29,7 +29,8 @@ WINRATE_DIFF_THRESHOLD = 15.0
 TELEGRAM_BOT_TOKEN = "8772522188:AAFUdQOlYiWoGfhfLLYNNDaHUL3dnFhU5Ck"
 TELEGRAM_CHAT_ID = "5559311100"
 
-ALERT_BEFORE_SECONDS = 30   # Gửi alert trước khi trận bắt đầu
+# ================= GLOBAL STATE =================
+alerted_match_ids = set()        # Lưu các trận đã gửi thông báo
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -62,8 +63,6 @@ def fetch_finished_matches(day=None, page=1):
     if LEAGUE_ID: params += f"&league_id={LEAGUE_ID}"
     
     url = f"{B365_API_BASE}/events/ended{params}"
-    logger.debug(f"Fetching ended: {url}")
-    
     for attempt in range(3):
         try:
             resp = requests.get(url, timeout=30)
@@ -126,17 +125,17 @@ def initialize_historical_data():
     logger.info("===== KHỞI TẠO HOÀN TẤT =====")
     logger.info(f"Tổng trận đã xử lý: {len(processed_ids)}")
 
-    # Log winrate tất cả player
-    logger.info("=== WINRATE TOÀN BỘ PLAYER SAU KHI LOAD HISTORY ===")
+    # Log winrate
+    logger.info("=== WINRATE TOÀN BỘ PLAYER ===")
     sorted_players = sorted(player_history.items(), key=lambda x: len(x[1]["matches"]), reverse=True)
     for player, data in sorted_players[:30]:
         total = data["win"] + data["draw"] + data["lose"]
         wr = round(data["win"] / total * 100, 1) if total > 0 else 0.0
         last = get_last_result(player)
-        logger.info(f"  {player:25} | {total:3} trận | WR={wr:5.1f}% | Last={last} | W/D/L={data['win']:2}/{data['draw']:2}/{data['lose']:2}")
+        logger.info(f"  {player:25} | {total:3} trận | WR={wr:5.1f}% | Last={last}")
 
 def update_player_history():
-    logger.debug("Cập nhật lịch sử mới nhất (page 1)")
+    logger.debug("Cập nhật lịch sử mới nhất")
     new_count = sum(1 for m in fetch_finished_matches(page=1)[0] if process_match(m))
     if new_count > 0:
         logger.info(f"Đã cập nhật thêm {new_count} trận mới")
@@ -159,49 +158,55 @@ def get_last_result(player):
         return "W" if hg > ag else "L"
     return "W" if ag > hg else "L"
 
-# ================= UPCOMING & ALERT =================
-def fetch_upcoming_matches():
-    url = f"{B365_API_BASE}/events/upcoming?sport_id={SPORT_ID}&league_id={LEAGUE_ID}&token={API_TOKEN}"
-    logger.debug(f"Fetching upcoming: {url}")
+# ================= INPLAY =================
+def fetch_inplay_matches():
+    url = f"{B365_API_BASE}/events/inplay?sport_id={SPORT_ID}&league_id={LEAGUE_ID}&token={API_TOKEN}"
+    logger.debug(f"Fetching inplay: {url}")
     try:
         r = requests.get(url, timeout=10).json()
-        logger.debug(f"Upcoming API trả về {len(r.get('results', []))} trận")
-        return r.get("results", [])
+        matches = r.get("results", [])
+        logger.debug(f"Inplay API trả về {len(matches)} trận")
+        return matches
     except Exception as e:
-        logger.error(f"Upcoming fetch error: {e}")
+        logger.error(f"Inplay fetch error: {e}")
         return []
 
 def check_and_alert():
-    now_unix = int(time.time())
-    matches = fetch_upcoming_matches()
+    matches = fetch_inplay_matches()
     if not matches:
-        logger.debug("Không có trận upcoming nào")
+        logger.debug("Không có trận inplay nào")
         return
 
+    logger.info(f"Inplay API trả về {len(matches)} trận - Bắt đầu kiểm tra...")
+
     for m in matches:
-        mid = m.get("id")
-        start_time = int(m.get("time", 0))
-        if not mid or start_time == 0:
+        mid = str(m.get("id"))
+        if not mid:
             continue
 
-        seconds_to_start = start_time - now_unix
-        if not (30 <= seconds_to_start <= 600):
+        # Nếu trận này đã gửi alert rồi thì bỏ qua
+        if mid in alerted_match_ids:
+            logger.debug(f"Trận {mid} đã gửi alert trước đó → bỏ qua")
             continue
 
-        if abs(seconds_to_start - ALERT_BEFORE_SECONDS) > 12:
+        ss = m.get("ss", "").strip()
+
+        # === KHÔNG SKIP 0-0 nữa ===
+        if not ss or ss == "*":
+            logger.debug(f"Skip trận {mid}: chưa có dữ liệu tỷ số (ss='{ss}')")
             continue
 
         home = extract_player(m["home"]["name"])
         away = extract_player(m["away"]["name"])
+
         wr_h = get_winrate(home)
         wr_a = get_winrate(away)
         diff = abs(wr_h - wr_a)
 
-        logger.info(f"Đang kiểm tra upcoming: {home} ({wr_h}%) vs {away} ({wr_a}%) | diff={diff:.1f}% | còn {seconds_to_start}s")
+        logger.info(f"→ Đang kiểm tra inplay: {home} vs {away} | Score: {ss} | WR: {wr_h}% - {wr_a}%")
 
-        # ===== KIỂM TRA TỪNG ĐIỀU KIỆN =====
         if diff <= WINRATE_DIFF_THRESHOLD:
-            logger.debug(f"→ Skip: Chênh lệch winrate chỉ {diff:.1f}% (<= {WINRATE_DIFF_THRESHOLD}%)")
+            logger.info(f"   → Skip: Chênh lệch winrate quá nhỏ ({diff:.1f}% <= {WINRATE_DIFF_THRESHOLD}%)")
             continue
 
         if wr_h > wr_a:
@@ -212,45 +217,40 @@ def check_and_alert():
             high_wr, low_wr = wr_a, wr_h
 
         if high_wr <= MIN_HIGH_WR:
-            logger.debug(f"→ Skip: Winrate cao nhất chỉ {high_wr}% (<= {MIN_HIGH_WR}%)")
+            logger.info(f"   → Skip: Winrate cao nhất quá thấp ({high_wr}% <= {MIN_HIGH_WR}%)")
             continue
 
         if low_wr >= MAX_LOW_WR:
-            logger.debug(f"→ Skip: Winrate thấp nhất {low_wr}% (>= {MAX_LOW_WR}%)")
+            logger.info(f"   → Skip: Winrate thấp nhất quá cao ({low_wr}% >= {MAX_LOW_WR}%)")
             continue
 
-        last_res = get_last_result(high)
-        if last_res != "W":
-            logger.debug(f"→ Skip: Trận gần nhất của {high} là {last_res} (không phải W)")
+        if get_last_result(high) != "W":
+            logger.info(f"   → Skip: Trận gần nhất của {high} không phải thắng")
             continue
 
-        # ========== THỎA MÃN TOÀN BỘ ĐIỀU KIỆN ==========
-        start_local = datetime.fromtimestamp(start_time).strftime('%H:%M:%S')
-        logger.info(f"✅ THỎA MÃN TOÀN BỘ ĐIỀU KIỆN → {high} ({high_wr}%) vs {low} ({low_wr}%) | Bắt đầu {start_local}")
+        # ========== THỎA MÃN → GỬI ALERT (CHỈ 1 LẦN) ==========
+        logger.info(f"✅ THỎA MÃN INPLAY → {high} ({high_wr:.1f}%) vs {low} ({low_wr:.1f}%) | Score: {ss}")
 
         message = f"""
-🚨 <b>KÈO TỐT SẮP BẮT ĐẦU</b>
-
-⚽ <b>{high}</b> vs {low}
-📊 Winrate: <b>{high_wr}%</b> vs {low_wr}%
-🔥 Trận gần nhất: <b>Thắng</b>
-
-⏰ Bắt đầu: <b>{start_local}</b> (còn ~{seconds_to_start}s)
-🆔 Match ID: <code>{mid}</code>
+⚽ <b>{home}</b> vs {away}
+📊 Winrate: <b>{wr_h:.1f}%</b> vs {wr_a:.1f}%
         """.strip()
 
         send_telegram(message)
 
+        # Đánh dấu trận này đã gửi alert
+        alerted_match_ids.add(mid)
+
 # ================= MAIN =================
 if __name__ == "__main__":
     initialize_historical_data()
-    logger.info("🤖 Bot Upcoming E-Soccer Volta đã khởi động (Debug + Log chi tiết ON)")
+    logger.info("🤖 Bot Inplay E-Soccer Volta đã khởi động - Mỗi trận chỉ gửi 1 lần")
 
     while True:
         try:
             update_player_history()
             check_and_alert()
-            time.sleep(25)          # ← Tăng lên 25 giây để giảm tải
+            time.sleep(20)        # Kiểm tra mỗi 20 giây
         except Exception as e:
-            logger.error(f"Lỗi vòng lặp chính: {e}")
+            logger.error(f"Lỗi vòng lặp: {e}")
             time.sleep(20)
